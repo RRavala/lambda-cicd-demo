@@ -1,4 +1,4 @@
-name: Test and Deploy Lambda
+name: Test and Deploy Lambda (SAM)
 
 on:
   pull_request:
@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 env:
-  FUNCTION_NAME: lambda-cicd-demo
   AWS_REGION: us-east-1
+  STACK_NAME: lambda-cicd-demo
 
 jobs:
   test:
@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Run tests
+      - name: Run unit tests
         run: pytest -v
 
   deploy:
@@ -41,13 +41,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install runtime dependencies into build/
-        run: |
-          pip install -r requirements.txt -t build/
-          cp src/handler.py build/
-
-      - name: Zip package
-        run: cd build && zip -r ../function.zip . -x "*.pyc" "__pycache__/*"
+      - uses: aws-actions/setup-sam@v2
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -55,14 +49,19 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy function code
-        run: |
-          aws lambda update-function-code \
-            --function-name "$FUNCTION_NAME" \
-            --zip-file fileb://function.zip \
-            --publish
+      - name: SAM build
+        run: sam build
 
-      - name: Wait for update to finish propagating
+      # --resolve-s3 lets SAM manage its own artifact bucket instead of
+      # requiring one to be created out-of-band first.
+      - name: SAM deploy
         run: |
-          aws lambda wait function-updated \
-            --function-name "$FUNCTION_NAME"
+          sam deploy \
+            --stack-name "$STACK_NAME" \
+            --capabilities CAPABILITY_IAM \
+            --resolve-s3 \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              DbSecretArn=${{ secrets.DB_SECRET_ARN }} \
+              DbTable=s3_uploads

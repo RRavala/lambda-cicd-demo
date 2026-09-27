@@ -1,0 +1,3 @@
+# Runtime dependency only. boto3 is not listed because the Lambda execution
+# environment already provides it — bundling it would just bloat the zip.
+psycopg2-binary==2.9.9

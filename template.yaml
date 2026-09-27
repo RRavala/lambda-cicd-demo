@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  lambda-cicd-demo: S3-triggered Lambda that upserts basic object metadata
+  into a PostgreSQL table. The stack owns the function AND the bucket, so
+  the whole thing is created/updated entirely through this template --
+  no manual console creation needed.
+
+Parameters:
+  BucketNamePrefix:
+    Type: String
+    Default: lambda-cicd-demo-uploads
+    Description: Prefix for the S3 bucket name (account ID is appended to keep it globally unique).
+  DbSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret holding DB credentials (host, port, dbname, username, password).
+  DbTable:
+    Type: String
+    Default: s3_uploads
+    Description: Target Postgres table name.
+  VpcSubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Optional. Subnet IDs if the function needs VPC access to reach Postgres.
+  VpcSecurityGroupIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Optional. Security group IDs for VPC access.
+
+Conditions:
+  HasVpcConfig: !Not [!Equals [!Join ["", !Ref VpcSubnetIds], ""]]
+
+Resources:
+  # NOTE: the function's IAM policy below references this bucket's ARN by
+  # rebuilding the name string (Sub) rather than !GetAtt/!Ref UploadBucket.
+  # Referencing the resource directly creates a CloudFormation dependency
+  # edge that collides with the implicit dependency SAM adds for the S3
+  # event's notification wiring (function -> bucket -> notification ->
+  # function), which CloudFormation rejects as circular.
+  UploadBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${BucketNamePrefix}-${AWS::AccountId}"
+
+  MetadataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: lambda-cicd-demo
+      CodeUri: src/
+      Handler: handler.handler
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DB_SECRET_ARN: !Ref DbSecretArn
+          DB_TABLE: !Ref DbTable
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds: !Ref VpcSubnetIds
+          SecurityGroupIds: !Ref VpcSecurityGroupIds
+        - !Ref AWS::NoValue
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectTagging
+              Resource: !Sub "arn:aws:s3:::${BucketNamePrefix}-${AWS::AccountId}/*"
+      Events:
+        S3Upload:
+          Type: S3
+          Properties:
+            Bucket: !Ref UploadBucket
+            Events: s3:ObjectCreated:*
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the deployed Lambda function
+    Value: !GetAtt MetadataFunction.Arn
+  FunctionName:
+    Value: !Ref MetadataFunction
+  BucketName:
+    Description: S3 bucket that triggers this function on upload
+    Value: !Ref UploadBucket
