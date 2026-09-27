@@ -1,0 +1,4 @@
+-r requirements.txt
+boto3==1.34.144
+pytest==8.2.2
+moto[s3,secretsmanager]==5.0.9
